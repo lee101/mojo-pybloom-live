@@ -1,11 +1,11 @@
 """XXH64 hashing and Bloom-filter bit operations exposed through a C ABI."""
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.sys.info import simd_width_of
 
-comptime BPtr = UnsafePointer[UInt8, AnyOrigin[mut=True]]
-comptime I64Ptr = UnsafePointer[Int64, AnyOrigin[mut=True]]
-comptime U64Ptr = UnsafePointer[UInt64, AnyOrigin[mut=True]]
+comptime BPtr = Pointer[UInt8, AnyOrigin[mut=True]]
+comptime I64Ptr = Pointer[Int64, AnyOrigin[mut=True]]
+comptime U64Ptr = Pointer[UInt64, AnyOrigin[mut=True]]
 
 comptime P64_1: UInt64 = 0x9E3779B185EBCA87
 comptime P64_2: UInt64 = 0xC2B2AE3D27D4EB4F
@@ -16,11 +16,19 @@ comptime SECOND_SEED: UInt64 = 0x9E3779B185EBCA87
 
 
 def read32(p: BPtr, offset: Int) -> UInt32:
-    return (p + offset).bitcast[UInt32]().load[alignment=1]()
+    return (
+        p.unsafe_offset(offset)
+        .unsafe_bitcast[UInt32]()
+        .unsafe_load[alignment=1]()
+    )
 
 
 def read64(p: BPtr, offset: Int) -> UInt64:
-    return (p + offset).bitcast[UInt64]().load[alignment=1]()
+    return (
+        p.unsafe_offset(offset)
+        .unsafe_bitcast[UInt64]()
+        .unsafe_load[alignment=1]()
+    )
 
 
 def rotl64(value: UInt64, amount: UInt64) -> UInt64:
@@ -66,7 +74,7 @@ def xxh64(p: BPtr, n: Int, seed: UInt64) -> UInt64:
         h = rotl64(h, 23) * P64_2 + P64_3
         i += 4
     while i < n:
-        h ^= UInt64(p[i]) * P64_5
+        h ^= UInt64(p[unsafe_offset=i]) * P64_5
         h = rotl64(h, 11) * P64_1
         i += 1
     h ^= h >> 33
@@ -96,7 +104,7 @@ def has_hashes(
         var within = Int((h1 + UInt64(i) * h2) % UInt64(bits_per_slice))
         var bit_index = i * bits_per_slice + within
         var mask = UInt8(1 << (bit_index & 7))
-        if (bits[bit_index >> 3] & mask) == 0:
+        if (bits[unsafe_offset=bit_index >> 3] & mask) == 0:
             return False
     return True
 
@@ -111,9 +119,7 @@ def add_key(
 ) -> Bool:
     var h1 = xxh64(key, key_len, 0)
     var h2 = xxh64(key, key_len, SECOND_SEED) | UInt64(1)
-    return add_hashes(
-        bits, h1, h2, num_slices, bits_per_slice, skip_check
-    )
+    return add_hashes(bits, h1, h2, num_slices, bits_per_slice, skip_check)
 
 
 def add_hashes(
@@ -130,39 +136,37 @@ def add_hashes(
         var bit_index = i * bits_per_slice + within
         var byte_index = bit_index >> 3
         var mask = UInt8(1 << (bit_index & 7))
-        if not skip_check and (bits[byte_index] & mask) == 0:
+        if not skip_check and (bits[unsafe_offset=byte_index] & mask) == 0:
             found_all = False
-        bits[byte_index] |= mask
+        bits[unsafe_offset=byte_index] |= mask
     return found_all
 
 
 def combine_range[
     is_union: Bool
-](
-    dst: BPtr, a: BPtr, b: BPtr, start: Int, end: Int
-):
+](dst: BPtr, a: BPtr, b: BPtr, start: Int, end: Int):
     comptime W = simd_width_of[DType.float64]()
     comptime BYTES_PER_VECTOR = W * 8
     var i = start
     var vector_end = end - ((end - start) % BYTES_PER_VECTOR)
-    var dst64 = (dst + start).bitcast[UInt64]()
-    var a64 = (a + start).bitcast[UInt64]()
-    var b64 = (b + start).bitcast[UInt64]()
+    var dst64 = dst.unsafe_offset(start).unsafe_bitcast[UInt64]()
+    var a64 = a.unsafe_offset(start).unsafe_bitcast[UInt64]()
+    var b64 = b.unsafe_offset(start).unsafe_bitcast[UInt64]()
     var word = 0
     while i < vector_end:
-        var av = a64.load[width=W, alignment=1](word)
-        var bv = b64.load[width=W, alignment=1](word)
+        var av = a64.unsafe_load[width=W, alignment=1](word)
+        var bv = b64.unsafe_load[width=W, alignment=1](word)
         comptime if is_union:
-            dst64.store[alignment=1](word, av | bv)
+            dst64.unsafe_store[alignment=1](word, av | bv)
         else:
-            dst64.store[alignment=1](word, av & bv)
+            dst64.unsafe_store[alignment=1](word, av & bv)
         word += W
         i += BYTES_PER_VECTOR
     while i < end:
         comptime if is_union:
-            dst[i] = a[i] | b[i]
+            dst[unsafe_offset=i] = a[unsafe_offset=i] | b[unsafe_offset=i]
         else:
-            dst[i] = a[i] & b[i]
+            dst[unsafe_offset=i] = a[unsafe_offset=i] & b[unsafe_offset=i]
         i += 1
 
 
@@ -188,7 +192,7 @@ def combine[
     var chunks = (nbytes + CHUNK_BYTES - 1) // CHUNK_BYTES
 
     @__copy_capture(dst_addr, a_addr, b_addr, nbytes)
-    @parameter
+    @__parameter
     def work(chunk: Int):
         var start = chunk * CHUNK_BYTES
         var end = min(start + CHUNK_BYTES, nbytes)
@@ -259,11 +263,15 @@ def mpbl_contains_many(
     var offsets = I64Ptr(unsafe_from_address=offsets_addr)
     var result = BPtr(unsafe_from_address=result_addr)
     for i in range(count):
-        var start = Int(offsets[i])
-        var key_len = Int(offsets[i + 1]) - start
-        result[i] = UInt8(
+        var start = Int(offsets[unsafe_offset=i])
+        var key_len = Int(offsets[unsafe_offset=i + 1]) - start
+        result[unsafe_offset=i] = UInt8(
             1 if has_key(
-                bits, keys + start, key_len, num_slices, bits_per_slice
+                bits,
+                keys.unsafe_offset(start),
+                key_len,
+                num_slices,
+                bits_per_slice,
             ) else 0
         )
 
@@ -283,11 +291,16 @@ def mpbl_add_many(
     var offsets = I64Ptr(unsafe_from_address=offsets_addr)
     var result = BPtr(unsafe_from_address=result_addr)
     for i in range(count):
-        var start = Int(offsets[i])
-        var key_len = Int(offsets[i + 1]) - start
-        result[i] = UInt8(
+        var start = Int(offsets[unsafe_offset=i])
+        var key_len = Int(offsets[unsafe_offset=i + 1]) - start
+        result[unsafe_offset=i] = UInt8(
             1 if add_key(
-                bits, keys + start, key_len, num_slices, bits_per_slice, False
+                bits,
+                keys.unsafe_offset(start),
+                key_len,
+                num_slices,
+                bits_per_slice,
+                False,
             ) else 0
         )
 
@@ -312,24 +325,28 @@ def mpbl_scalable_add(
     var first_to_check = last - 1 if add_to_last != 0 else last
     for offset in range(first_to_check + 1):
         var index = first_to_check - offset
-        var bits = BPtr(unsafe_from_address=Int(bits_addrs[index]))
+        var bits = BPtr(
+            unsafe_from_address=Int(bits_addrs[unsafe_offset=index])
+        )
         if has_hashes(
             bits,
             h1,
             h2,
-            Int(num_slices[index]),
-            Int(bits_per_slice[index]),
+            Int(num_slices[unsafe_offset=index]),
+            Int(bits_per_slice[unsafe_offset=index]),
         ):
             return 1
     if add_to_last == 0:
         return -1
-    var last_bits = BPtr(unsafe_from_address=Int(bits_addrs[last]))
+    var last_bits = BPtr(
+        unsafe_from_address=Int(bits_addrs[unsafe_offset=last])
+    )
     return 1 if add_hashes(
         last_bits,
         h1,
         h2,
-        Int(num_slices[last]),
-        Int(bits_per_slice[last]),
+        Int(num_slices[unsafe_offset=last]),
+        Int(bits_per_slice[unsafe_offset=last]),
         False,
     ) else 0
 
@@ -342,9 +359,7 @@ def mpbl_or(
     nbytes: Int,
     parallel_threshold: Int,
 ) abi("C"):
-    combine[True](
-        dst_addr, a_addr, b_addr, nbytes, parallel_threshold
-    )
+    combine[True](dst_addr, a_addr, b_addr, nbytes, parallel_threshold)
 
 
 @export("mpbl_and")
@@ -355,6 +370,4 @@ def mpbl_and(
     nbytes: Int,
     parallel_threshold: Int,
 ) abi("C"):
-    combine[False](
-        dst_addr, a_addr, b_addr, nbytes, parallel_threshold
-    )
+    combine[False](dst_addr, a_addr, b_addr, nbytes, parallel_threshold)
