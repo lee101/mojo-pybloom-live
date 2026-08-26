@@ -11,7 +11,14 @@ import numpy as np
 import xxhash
 from bitarray import bitarray
 
-from ._lib import bitarray_address, bytes_buffer, encode_keys, key_bytes, lib
+from ._lib import (
+    array_address,
+    bitarray_address,
+    bytes_address,
+    encode_keys,
+    key_bytes,
+    lib,
+)
 
 _SECOND_SEED = 0x9E3779B185EBCA87
 _SET_PARALLEL_THRESHOLD = 1 << 27
@@ -46,7 +53,7 @@ class BloomFilter:
             )
         )
         self._setup(error_rate, num_slices, bits_per_slice, capacity, 0)
-        self.bitarray = bitarray(self.num_bits, endian="little")
+        self._set_bitarray(bitarray(self.num_bits, endian="little"))
         self.bitarray.setall(False)
 
     def _setup(
@@ -77,19 +84,21 @@ class BloomFilter:
             self.num_slices, self.bits_per_slice
         )
 
+    def _set_bitarray(self, bits) -> None:
+        self.bitarray = bits
+        self._bits_address = bitarray_address(bits)
+
     def __contains__(self, key) -> bool:
         value = key_bytes(key)
-        storage, address = bytes_buffer(value)
         found = bool(
             lib().mpbl_contains(
-                bitarray_address(self.bitarray),
-                address,
+                self._bits_address,
+                bytes_address(value),
                 len(value),
                 self.num_slices,
                 self.bits_per_slice,
             )
         )
-        del storage
         return found
 
     def __len__(self) -> int:
@@ -99,18 +108,16 @@ class BloomFilter:
         if self.count > self.capacity:
             raise IndexError("BloomFilter is at capacity")
         value = key_bytes(key)
-        storage, address = bytes_buffer(value)
         found = bool(
             lib().mpbl_add(
-                bitarray_address(self.bitarray),
-                address,
+                self._bits_address,
+                bytes_address(value),
                 len(value),
                 self.num_slices,
                 self.bits_per_slice,
-                int(bool(skip_check)),
+                skip_check,
             )
         )
-        del storage
         if skip_check or not found:
             self.count += 1
             return False
@@ -122,7 +129,7 @@ class BloomFilter:
         result = np.empty(len(values), dtype=np.uint8)
         if values:
             lib().mpbl_contains_many(
-                bitarray_address(self.bitarray),
+                self._bits_address,
                 keys_address,
                 int(offsets.ctypes.data),
                 len(values),
@@ -142,7 +149,7 @@ class BloomFilter:
         result = np.empty(len(values), dtype=np.uint8)
         if values:
             lib().mpbl_add_many(
-                bitarray_address(self.bitarray),
+                self._bits_address,
                 keys_address,
                 int(offsets.ctypes.data),
                 len(values),
@@ -164,7 +171,7 @@ class BloomFilter:
             self.capacity,
             0,
         )
-        new_filter.bitarray = self.bitarray.copy()
+        new_filter._set_bitarray(self.bitarray.copy())
         return new_filter
 
     def _empty_like(self):
@@ -176,7 +183,7 @@ class BloomFilter:
             self.capacity,
             0,
         )
-        new_filter.bitarray = bitarray(self.num_bits, endian="little")
+        new_filter._set_bitarray(bitarray(self.num_bits, endian="little"))
         return new_filter
 
     def _compatible(self, other, operation: str) -> None:
@@ -194,9 +201,9 @@ class BloomFilter:
         self._compatible(other, "Unioning")
         new_bloom = self._empty_like()
         lib().mpbl_or(
-            bitarray_address(new_bloom.bitarray),
-            bitarray_address(self.bitarray),
-            bitarray_address(other.bitarray),
+            new_bloom._bits_address,
+            self._bits_address,
+            other._bits_address,
             self.bitarray.nbytes,
             _SET_PARALLEL_THRESHOLD,
         )
@@ -209,9 +216,9 @@ class BloomFilter:
         self._compatible(other, "Intersecting")
         new_bloom = self._empty_like()
         lib().mpbl_and(
-            bitarray_address(new_bloom.bitarray),
-            bitarray_address(self.bitarray),
-            bitarray_address(other.bitarray),
+            new_bloom._bits_address,
+            self._bits_address,
+            other._bits_address,
             self.bitarray.nbytes,
             _SET_PARALLEL_THRESHOLD,
         )
@@ -254,12 +261,13 @@ class BloomFilter:
             raise ValueError("Bit length mismatch!")
         loaded = bitarray(endian="little")
         loaded.frombytes(payload)
-        new_filter.bitarray = loaded
+        new_filter._set_bitarray(loaded)
         return new_filter
 
     def __getstate__(self):
         state = self.__dict__.copy()
         state.pop("make_hashes", None)
+        state.pop("_bits_address", None)
         return state
 
     def __setstate__(self, state):
@@ -267,6 +275,7 @@ class BloomFilter:
         self.make_hashes, self.hashfn = make_hashfuncs(
             self.num_slices, self.bits_per_slice
         )
+        self._bits_address = bitarray_address(self.bitarray)
 
 
 class ScalableBloomFilter:
@@ -304,23 +313,27 @@ class ScalableBloomFilter:
     def _refresh_kernel_metadata(self) -> None:
         if np.dtype(np.uintp).itemsize != 8:
             raise RuntimeError("mojo-pybloom-live requires a 64-bit platform")
+        bits = np.asarray(
+            [bloom._bits_address for bloom in self.filters], dtype=np.uintp
+        )
+        slices = np.asarray(
+            [bloom.num_slices for bloom in self.filters], dtype=np.int64
+        )
+        sizes = np.asarray(
+            [bloom.bits_per_slice for bloom in self.filters], dtype=np.int64
+        )
         self._kernel_metadata = (
-            np.asarray(
-                [bitarray_address(bloom.bitarray) for bloom in self.filters],
-                dtype=np.uintp,
-            ),
-            np.asarray(
-                [bloom.num_slices for bloom in self.filters], dtype=np.int64
-            ),
-            np.asarray(
-                [bloom.bits_per_slice for bloom in self.filters],
-                dtype=np.int64,
-            ),
+            bits,
+            slices,
+            sizes,
+            array_address(bits),
+            array_address(slices),
+            array_address(sizes),
         )
 
     def add(self, key) -> bool:
         value = key_bytes(key)
-        storage, address = bytes_buffer(value)
+        address = bytes_address(value)
         if not self.filters:
             bloom = BloomFilter(
                 capacity=self.initial_capacity,
@@ -333,18 +346,19 @@ class ScalableBloomFilter:
             if bloom.count >= bloom.capacity:
                 if self._kernel_metadata is None:
                     self._refresh_kernel_metadata()
-                bits, slices, sizes = self._kernel_metadata
+                _, _, _, bits_address, slices_address, sizes_address = (
+                    self._kernel_metadata
+                )
                 found = lib().mpbl_scalable_add(
-                    int(bits.ctypes.data),
-                    int(slices.ctypes.data),
-                    int(sizes.ctypes.data),
+                    bits_address,
+                    slices_address,
+                    sizes_address,
                     len(self.filters),
                     address,
                     len(value),
                     0,
                 )
                 if found == 1:
-                    del storage
                     return True
                 bloom = BloomFilter(
                     capacity=bloom.capacity * self.scale,
@@ -354,19 +368,20 @@ class ScalableBloomFilter:
                 self._refresh_kernel_metadata()
         if self._kernel_metadata is None:
             self._refresh_kernel_metadata()
-        bits, slices, sizes = self._kernel_metadata
+        _, _, _, bits_address, slices_address, sizes_address = (
+            self._kernel_metadata
+        )
         found = bool(
             lib().mpbl_scalable_add(
-                int(bits.ctypes.data),
-                int(slices.ctypes.data),
-                int(sizes.ctypes.data),
+                bits_address,
+                slices_address,
+                sizes_address,
                 len(self.filters),
                 address,
                 len(value),
                 1,
             )
         )
-        del storage
         if not found:
             bloom.count += 1
         return found

@@ -64,11 +64,15 @@ def lib() -> ctypes.CDLL:
     return _library
 
 
-def bytes_buffer(value: bytes) -> tuple[bytes, int]:
+def bytes_address(value: bytes) -> int:
     address = int(_bytes_address(value))
     if not address:
         raise RuntimeError("CPython returned a null bytes buffer")
-    return value, address
+    return address
+
+
+def bytes_buffer(value: bytes) -> tuple[bytes, int]:
+    return value, bytes_address(value)
 
 
 def encode_keys(keys) -> tuple[list, bytes, np.ndarray, int]:
@@ -82,7 +86,8 @@ def encode_keys(keys) -> tuple[list, bytes, np.ndarray, int]:
         if total > _I64_MAX:
             raise OverflowError("encoded key data exceeds the Mojo ABI limit")
         offsets[index] = total
-    storage, address = bytes_buffer(b"".join(encoded))
+    storage = b"".join(encoded)
+    address = bytes_address(storage)
     return values, storage, offsets, address
 
 
@@ -106,5 +111,4 @@ def array_address(array: np.ndarray) -> int:
 
 
 def hash64(value: bytes, seed: int = 0) -> int:
-    storage, address = bytes_buffer(value)
-    return int(lib().mpbl_hash64(address, len(value), seed))
+    return int(lib().mpbl_hash64(bytes_address(value), len(value), seed))

@@ -74,20 +74,22 @@ allocation, and FFI. A ratio above 1 means this port is faster.
 
 | case | Mojo port | pybloom-live | upstream / Mojo |
 | --- | ---: | ---: | ---: |
-| bulk insert 250k integers | 185.5 ms | 1895.0 ms | 10.21x |
-| bulk lookup 250k present | 181.4 ms | 1218.4 ms | 6.72x |
-| bulk lookup 250k absent | 166.8 ms | 603.4 ms | 3.62x |
-| scalar add 25k integers | 87.6 ms | 104.5 ms | 1.19x |
-| union, capacity 5M | 3.2 ms | 5.5 ms | 1.74x |
-| parallel union, capacity 75M | 133.3 ms | 504.4 ms | 3.78x |
-| scalable insert 25k | 279.0 ms | 529.6 ms | 1.90x |
+| bulk insert 250k integers | 176.4 ms | 1116.9 ms | 6.33x |
+| bulk lookup 250k present | 167.8 ms | 1011.1 ms | 6.02x |
+| bulk lookup 250k absent | 150.6 ms | 604.3 ms | 4.01x |
+| scalar add 25k integers | 67.4 ms | 103.3 ms | 1.53x |
+| union, capacity 5M | 1.8 ms | 5.0 ms | 2.74x |
+| parallel union, capacity 75M | 133.6 ms | 426.8 ms | 3.19x |
+| scalable insert 25k | 76.4 ms | 349.9 ms | 4.58x |
 
 Bulk calls win by amortizing ctypes overhead and avoiding Python's per-slice
 hash-position loop. Scalar calls pass their encoded Python bytes to Mojo without
-an intermediate ctypes copy. Union and intersection use SIMD with a scalar tail;
-large buffers are split into independent tasks, while smaller buffers avoid
-parallel launch overhead. Scalable insertion hashes each key once in one FFI
-call and reuses those hashes across every filter level.
+an intermediate ctypes copy, and cache the fixed bit-array buffer address.
+Union and intersection use SIMD with a scalar tail; large buffers are split into
+independent tasks, while smaller buffers avoid parallel launch overhead.
+Scalable insertion hashes each key once in one FFI call, reuses those hashes
+across every filter level, and caches the addresses of its stable NumPy metadata
+buffers.
 
 There is no GPU path. Set operations perform one bitwise operation for every
 three bytes moved, and hashing is followed by sparse, irregular bit probes.

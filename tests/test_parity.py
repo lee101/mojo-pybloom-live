@@ -12,7 +12,7 @@ from pybloom_live import BloomFilter as PythonBloomFilter
 from pybloom_live import ScalableBloomFilter as PythonScalableBloomFilter
 
 from mojo_pybloom_live import BloomFilter, ScalableBloomFilter
-from mojo_pybloom_live._lib import hash64, lib
+from mojo_pybloom_live._lib import array_address, bitarray_address, hash64, lib
 from mojo_pybloom_live.pybloom import make_hashfuncs
 
 
@@ -211,6 +211,16 @@ def test_pickle_roundtrip():
     assert restored.contains_many(range(100)).all()
 
 
+def test_cached_ffi_addresses_rebuild_after_pickle():
+    bloom = BloomFilter(1000)
+    bloom.update(range(100))
+    assert bloom._bits_address == bitarray_address(bloom.bitarray)
+    assert "_bits_address" not in bloom.__getstate__()
+    restored = pickle.loads(pickle.dumps(bloom))
+    assert restored._bits_address == bitarray_address(restored.bitarray)
+    assert restored.add("after-pickle") is False
+
+
 def test_bulk_update_matches_scalar_exactly():
     values = [f"value-{index % 800}" for index in range(2000)]
     bulk, scalar = BloomFilter(5000), BloomFilter(5000)
@@ -394,6 +404,9 @@ def test_scalable_pickle_roundtrip():
     assert restored.capacity == bloom.capacity
     assert restored.contains_many(range(20)).all()
     assert restored.add("after-pickle") is False
+    arrays = restored._kernel_metadata[:3]
+    addresses = restored._kernel_metadata[3:]
+    assert addresses == tuple(array_address(array) for array in arrays)
 
 
 def test_scalable_file_roundtrip_and_size_match_upstream():
