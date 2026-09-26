@@ -1,6 +1,5 @@
 """XXH64 hashing and Bloom-filter bit operations exposed through a C ABI."""
 
-from max.algorithm import parallelize
 from std.sys.info import simd_width_of
 
 comptime BPtr = Pointer[UInt8, AnyOrigin[mut=True]]
@@ -177,10 +176,10 @@ def combine[
     a_addr: Int,
     b_addr: Int,
     nbytes: Int,
-    parallel_threshold: Int,
+    chunk_threshold: Int,
 ):
     comptime CHUNK_BYTES = 1 << 22
-    if nbytes < parallel_threshold:
+    if nbytes < chunk_threshold:
         combine_range[is_union](
             BPtr(unsafe_from_address=dst_addr),
             BPtr(unsafe_from_address=a_addr),
@@ -190,21 +189,15 @@ def combine[
         )
         return
     var chunks = (nbytes + CHUNK_BYTES - 1) // CHUNK_BYTES
-
-    @__copy_capture(dst_addr, a_addr, b_addr, nbytes)
-    @__parameter
-    def work(chunk: Int):
+    for chunk in range(chunks):
         var start = chunk * CHUNK_BYTES
-        var end = min(start + CHUNK_BYTES, nbytes)
         combine_range[is_union](
             BPtr(unsafe_from_address=dst_addr),
             BPtr(unsafe_from_address=a_addr),
             BPtr(unsafe_from_address=b_addr),
             start,
-            end,
+            min(start + CHUNK_BYTES, nbytes),
         )
-
-    parallelize[work](chunks, min(chunks, 8))
 
 
 @export("mpbl_hash64")
@@ -357,9 +350,9 @@ def mpbl_or(
     a_addr: Int,
     b_addr: Int,
     nbytes: Int,
-    parallel_threshold: Int,
+    chunk_threshold: Int,
 ) abi("C"):
-    combine[True](dst_addr, a_addr, b_addr, nbytes, parallel_threshold)
+    combine[True](dst_addr, a_addr, b_addr, nbytes, chunk_threshold)
 
 
 @export("mpbl_and")
@@ -368,6 +361,6 @@ def mpbl_and(
     a_addr: Int,
     b_addr: Int,
     nbytes: Int,
-    parallel_threshold: Int,
+    chunk_threshold: Int,
 ) abi("C"):
-    combine[False](dst_addr, a_addr, b_addr, nbytes, parallel_threshold)
+    combine[False](dst_addr, a_addr, b_addr, nbytes, chunk_threshold)

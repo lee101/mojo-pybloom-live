@@ -79,14 +79,17 @@ allocation, and FFI. A ratio above 1 means this port is faster.
 | bulk lookup 250k absent | 150.6 ms | 604.3 ms | 4.01x |
 | scalar add 25k integers | 67.4 ms | 103.3 ms | 1.53x |
 | union, capacity 5M | 1.8 ms | 5.0 ms | 2.74x |
-| parallel union, capacity 75M | 133.6 ms | 426.8 ms | 3.19x |
+| chunked union, capacity 75M | 133.6 ms | 426.8 ms | 3.19x |
 | scalable insert 25k | 76.4 ms | 349.9 ms | 4.58x |
 
 Bulk calls win by amortizing ctypes overhead and avoiding Python's per-slice
 hash-position loop. Scalar calls pass their encoded Python bytes to Mojo without
 an intermediate ctypes copy, and cache the fixed bit-array buffer address.
-Union and intersection use SIMD with a scalar tail; large buffers are split into
-independent tasks, while smaller buffers avoid parallel launch overhead.
+Union and intersection use SIMD with a scalar tail; buffers at or above 4 MiB
+are walked in 4 MiB chunks, while smaller buffers take a single pass. These are
+bitwise set operations with no arithmetic at all -- 48 bytes of traffic per
+8-byte word, zero flops per byte -- so the chunk loop runs serially on the
+calling thread. There is nothing numeric here to parallelise.
 Scalable insertion hashes each key once in one FFI call, reuses those hashes
 across every filter level, and caches the addresses of its stable NumPy metadata
 buffers.

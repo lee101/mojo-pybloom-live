@@ -130,7 +130,7 @@ def main():
         py_large_right.add(key)
     cases.append(
         (
-            "parallel union, capacity 75M",
+            "chunked union, capacity 75M",
             lambda: large_left | large_right,
             lambda: py_large_left | py_large_right,
         )

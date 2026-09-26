@@ -145,7 +145,7 @@ def test_set_kernels_handle_simd_tails(capacity, operation, numpy_operation):
     "kernel,numpy_operation",
     [("mpbl_or", np.bitwise_or), ("mpbl_and", np.bitwise_and)],
 )
-def test_set_kernels_parallelize_only_at_threshold(kernel, numpy_operation):
+def test_set_kernels_chunk_only_above_threshold(kernel, numpy_operation):
     threshold = 1 << 22
     for nbytes in (threshold - 3, threshold + 17):
         indices = np.arange(nbytes, dtype=np.uint64)
